@@ -2,15 +2,13 @@
  __CONFIG _FOSC_XT & _WDTE_OFF & _PWRTE_OFF & _BOREN_ON & _LVP_OFF & _CPD_OFF & _WRT_OFF & _CP_OFF
 
 var     UDATA
+t0 res .1
+t1 res .1
+t2 res .1
 led_count res .1
 led_row res .1
-led_tmp res .1
-led_tmp2 res .1
 animation_count_H res .1
 animation_count_L res .1
-anim_row res .1
-anim_col res .1
-anim_tmp res .1
 state equ 0x70
 
 res_vect    CODE    0x0000
@@ -51,22 +49,22 @@ led_isr
     movfw INDF ; W = *(state + led_row)
     movwf PORTC
 
-    ; turn on next row
+    ; PORTD = ~(1 << led_row)
     movfw led_row
-    movwf led_tmp
-    incf led_tmp, f
+    movwf t0
+    incf t0, f
     movlw .1
-    movwf led_tmp2
+    movwf t1
 led_isr_LOOP1
-    decfsz led_tmp, f
+    decfsz t0, f
     goto led_isr_L1
     goto led_isr_L2
 led_isr_L1
-    rlf led_tmp2, f
+    rlf t1, f
     goto led_isr_LOOP1
 led_isr_L2
-    comf led_tmp2, f
-    movfw led_tmp2
+    comf t1, f
+    movfw t1
     movwf PORTD
 
     ; led_row = (led_row + 1) % 8
@@ -77,26 +75,26 @@ led_isr_L2
 
 animation_isr
     movlw .8
-    movwf anim_row
-    movwf anim_col
+    movwf t0
+    movwf t1
 anim_LOOP
     movlw state
-    addwf anim_row, w
+    addwf t0, w
     movwf FSR
     decf FSR, f
-    movfw INDF  ; W = *(state + anim_row)
+    movfw INDF  ; W = *(state + t0)
 
-    movwf anim_tmp
-    comf anim_tmp, f
+    movwf t2
+    comf t2, f
 
     movlw state
-    addwf anim_row, w
+    addwf t0, w
     movwf FSR
     decf FSR, f
-    movfw anim_tmp
-    movwf INDF  ; *(state + anim_row) = anim_tmp
+    movfw t2
+    movwf INDF  ; *(state + t0) = t2
 
-    decfsz anim_row
+    decfsz t0
     goto anim_LOOP
     return
 
@@ -119,6 +117,8 @@ main
     clrf TRISD
     clrf TRISC
     banksel PORTD
+    movlw 0xfe
+    movwf PORTD
 
     movlw 0x00
     movwf 0x70
