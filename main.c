@@ -22,16 +22,21 @@
 
 unsigned char state[8] = {
     0x00,
-    0x24,
-    0x5a,
-    0x24,
-    0x24,
-    0x5a,
-    0x24,
-    0x00
+    0x83,
+    0x00,
+    0x00,
+    0x00,
+    0x07,
+    0x01,
+    0x02
 };
 
+//unsigned char leds[8]; // for debugging
+
+unsigned char nbrstate[4];
+
 struct {
+    unsigned char state;
     unsigned char rstate;
     unsigned char tstate;
     unsigned char rbuf;
@@ -55,8 +60,17 @@ void anim_isr();
 void reset_comm() {
     for (int i = 0; i < 4; i++) {
         RX[i] = TX[i] = 1;
-        comm[i].rstate = comm[i].tstate = 0;
+        comm[i].state = comm[i].rstate = comm[i].tstate = 0;
+        nbrstate[i] = 0;
     }
+}
+
+unsigned char col_state(int col) {
+    unsigned char out = 0;
+    for (int i = 0; i < 8; i++) {
+        out |= (((state[i] & (1 << col)) >> col) << i);
+    }
+    return out;
 }
 
 // left: TX  RX   right: TX RX
@@ -75,9 +89,10 @@ void interrupt isr() {
         ledc = 2;
     }
 
-    if (--animc <= 0) {
-        anim_flag = 1;
-        animc = 1000;
+    if (anim_flag == 0) {
+        if (--animc <= 0) {
+            anim_flag = 1;
+        }
     }
 
     RX[0] = (PORTC & 0x40) ? 1:0;
@@ -192,6 +207,7 @@ unsigned char bitcount(unsigned char a) {
 
 unsigned char get_neighbors(int i, int j) {
     unsigned char a = 0, b = 0, c = 0, mask;
+    unsigned char out;
     a = state[i] & (~(1 << j));
     if (i != 0) b = state[i-1];
     if (i != 7) c = state[i+1];
@@ -203,7 +219,28 @@ unsigned char get_neighbors(int i, int j) {
     } else {
         mask = (1 << j) | (1 << (j + 1)) | (1 << (j - 1));
     }
-    return bitcount(a & mask) + bitcount(b & mask) + bitcount(c & mask);
+    out = bitcount(a & mask) + bitcount(b & mask) + bitcount(c & mask);
+
+    if (j == 0) {
+        out += ((nbrstate[1] & (1 << i)) ? 1:0);
+        if (i > 0) {
+            out += ((nbrstate[1] & (1 << (i-1))) ? 1:0);
+        }
+        if (i < 7) {
+            out += ((nbrstate[1] & (1 << (i+1))) ? 1:0);
+        }
+    }
+    if (j == 7) {
+        out += ((nbrstate[0] & (1 << i)) ? 1:0);
+        if (i > 0) {
+            out += ((nbrstate[0] & (1 << (i-1))) ? 1:0);
+        }
+        if (i < 7) {
+            out += ((nbrstate[0] & (1 << (i+1))) ? 1:0);
+        }
+    }
+
+    return out;
 }
 
 void anim_isr() {
@@ -263,30 +300,70 @@ void main(void) {
 
     reset_comm();
 
-    unsigned char state = 0;
+    unsigned char mstate = 0;
+    unsigned char tmp = 5;
+    unsigned char ls, rs;
     while(1) {
         // comm loop
         for (int i = 0; i < 2; i++) {
-            if (comm[i].rstate == 3) { // received a byte on the comm
-                if (state == 0) {
+            if (comm[i].rstate == 3) { // received a byte on the comm 
+                if (mstate == 0) {
                     if (comm[i].rbuf == 0xf0) {
-                        state = 1;
+                        mstate = 1;
+                        animc = 500;
+                        anim_flag = 0;
                     }
+                }
+                if ((comm[i].rbuf & 0xf0) == 0x10) {
+                    nbrstate[i] = comm[i].rbuf & 0x0f;
+                } else if ((comm[i].rbuf & 0xf0) == 0x20) {
+                    nbrstate[i] |= (comm[i].rbuf << 4);
                 }
 
                 comm[i].rstate = 0; // acknowledge so interrupt driver can read more bytes
             }
         }
 
-        if (state == 0) {
+        if (mstate == 0) {
             if((PORTD & 0x10) == 0) { // go button pressed
                 tx_all(0xf0);
-                state = 1;
+                mstate = 1;
+
+                animc = 500;
+                anim_flag = 0;
             }
-        } else if (state == 1) {
+        } else if (mstate == 1) {
+            if (anim_flag) {
+                animc = 500;
+                anim_flag = 0;
+                mstate = 2;
+            }
+        } else if (mstate == 2) {
+            if (anim_flag) {
+                ls = col_state(7);
+                rs = col_state(0);
+                tx(0, (ls & 0x0f) | 0x10);
+                tx(1, (rs & 0x0f) | 0x10);
+
+                animc = 500;
+                anim_flag = 0;
+                mstate = 3;
+            }
+        } else if (mstate == 3) {
+            if (anim_flag) {
+                tx(0, ((ls >> 4) & 0x0f) | 0x20);
+                tx(1, ((rs >> 4) & 0x0f) | 0x20);
+
+                animc = 500;
+                anim_flag = 0;
+                mstate = 4;
+            }
+        } else if (mstate == 4) {
             if (anim_flag) {
                 anim_isr();
-                anim_flag == 0;
+                animc = 500;
+                anim_flag = 0;
+                mstate = 1;
             }
         }
     }
