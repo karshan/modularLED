@@ -8,6 +8,8 @@
 
 #include <xc.h>
 
+#define _XTAL_FREQ 4000000
+
 // CONFIG
 #pragma config FOSC = XT        // Oscillator Selection bits (XT oscillator)
 #pragma config WDTE = OFF       // Watchdog Timer Enable bit (WDT disabled)
@@ -29,14 +31,36 @@ unsigned char state[8] = {
     0x00
 };
 
+struct {
+    unsigned char rstate;
+    unsigned char tstate;
+    unsigned char rbuf;
+    unsigned char tbuf;
+    int ri; // bit index into rbuf
+    int ti; // bit index into tbuf
+    int rc; // counter for when to sample
+    int tc; // counter for when to transmit
+}comm[4]; // L R U D
+unsigned char RX[4] = {1, 1, 1, 1}; // buffer actual pins for code simplicity
+unsigned char TX[4] = {1, 1, 1, 1};
+
 unsigned char ledc = 0;
 unsigned char led_row = 0;
-long int animc = 2000;
-bit anim_flag;
+long int animc = 0;
+bit anim_flag = 0;
 
 void led_isr();
 void anim_isr();
 
+void reset_comm() {
+    for (int i = 0; i < 4; i++) {
+        RX[i] = TX[i] = 1;
+        comm[i].rstate = comm[i].tstate = 0;
+    }
+}
+
+// left: TX  RX   right: TX RX
+//       RC7 RC6         RC5 RC4
 void interrupt isr() {
     PIR1 &= 0xfe;
     T1CON &= 0xfe;
@@ -46,23 +70,114 @@ void interrupt isr() {
 
     T1CON |= 0x01;
 
-    if (ledc <= 0) {
+    if (--ledc <= 0) {
         led_isr();
-        ledc = 3;
+        ledc = 2;
     }
 
-    if (animc <= 0) {
+    if (--animc <= 0) {
         anim_flag = 1;
-        animc = 500;
+        animc = 1000;
     }
-    ledc--;
-    animc--;
+
+    RX[0] = (PORTC & 0x40) ? 1:0;
+    RX[1] = (PORTC & 0x10) ? 1:0;
+    // TODO rx buffering (multiple bytes)
+    for (int i = 0; i < 2; i++) {
+        if (comm[i].rstate == 0) {
+            if (RX[i] == 0) { // see a start bit
+                comm[i].rstate = 1;
+                comm[i].rc = 24;
+                comm[i].ri = 0;
+                comm[i].rbuf = 0;
+            }
+        } else if (comm[i].rstate == 1) {
+            if (--comm[i].rc <= 0) {
+                comm[i].rbuf |= RX[i] << comm[i].ri;
+                comm[i].rc = 16;
+                comm[i].ri++;
+                if (comm[i].ri >= 8) {
+                    comm[i].rstate = 2;
+                }
+            }
+        } else if (comm[i].rstate == 2) {
+            if (RX[i] == 1) { // wait for end bit
+                comm[i].rstate = 3;
+            }
+        }
+
+        if (comm[i].tstate == 1) {
+            if (--comm[i].tc <= 0) {
+                if (comm[i].ti == 0) {
+                    TX[i] = 0; //start
+                } else {
+                    TX[i] = (comm[i].tbuf & (1 << (comm[i].ti - 1))) ? 1:0;
+                }
+                comm[i].ti++;
+                comm[i].tc = 16;
+                if (comm[i].ti >= 9) {
+                    comm[i].tstate = 2;
+                }
+            }
+        } else if (comm[i].tstate == 2) {
+            if (--comm[i].tc <= 0) {
+                TX[i] = 1; //end
+                comm[i].tstate = 0;
+            }
+        }
+    }
+    if (TX[1]) {
+        TRISC |= 0x20;
+    } else {
+        TRISC &= 0xdf;
+        PORTC &= 0xdf;
+    }
+    if (TX[0]) {
+        TRISC |= 0x80;
+    } else {
+        TRISC &= 0x7f;
+        PORTC &= 0x7f;
+    }
+}
+
+//cols: RA2 RA5 RE0 RD3 RE1 RA3 RA1 RA0
+//rows: RE2 RC0 RD1 RC1 RC2 RD0 RC3 RD2
+unsigned char rows = 0, cols = 0;
+void set_cols(unsigned char a) {
+    cols = a;
+    PORTA = (((cols & 0x80) ? 1:0) << 2) |
+            (((cols & 0x40) ? 1:0) << 5) |
+            (((cols & 4) ? 1:0) << 3) |
+            (((cols & 2) ? 1:0) << 1) |
+            ((cols & 1) ? 1:0);
+    PORTE = ((cols & 0x20) ? 1:0) |
+            (((cols & 8) ? 1:0) << 1) |
+            (((rows & 0x80) ? 1:0) << 2);
+    PORTD = (((cols & 0x10) ? 1:0) << 3) |
+            (((rows & 0x20) ? 1:0) << 1) |
+            ((rows & 4) ? 1:0) |
+            (((rows & 1) ? 1:0) << 2);
+}
+
+void set_rows(unsigned char a) {
+    rows = a;
+    PORTC = ((rows & 0x40) ? 1:0) |
+            (((rows & 0x10) ? 1:0) << 1) |
+            (((rows & 8) ? 1:0) << 2) |
+            (((rows & 2) ? 1:0) << 3);
+    PORTE = ((cols & 0x20) ? 1:0) |
+            (((cols & 8) ? 1:0) << 1) |
+            (((rows & 0x80) ? 1:0) << 2);
+    PORTD = (((cols & 0x10) ? 1:0) << 3) |
+            (((rows & 0x20) ? 1:0) << 1) |
+            ((rows & 4) ? 1:0) |
+            (((rows & 1) ? 1:0) << 2);
 }
 
 void led_isr() {
-    PORTD = 0xff;
-    PORTC = state[led_row];
-    PORTD = ~(1 << led_row);
+    set_rows(0xff);
+    set_cols(state[led_row]);
+    set_rows(~(1 << led_row));
     led_row = (led_row + 1) & 0x07;
 }
 
@@ -117,19 +232,62 @@ void anim_isr() {
     }
 }
 
-void main(void) {
-    TRISC = TRISD = 0;
+void tx(int c, unsigned char buf) {
+    while(comm[c].tstate != 0) {} // wait for comm to finish txing last byte
 
+    comm[c].tbuf = buf;
+    comm[c].ti = 0;
+    comm[c].tstate = 1;
+}
+
+void tx_all(unsigned char buf) {
+    for (int i = 0; i < 2; i++) {
+        tx(i, buf);
+    }
+}
+
+void main(void) {
+//cols: RA2 RA5 RE0 RD3 RE1 RA3 RA1 RA0
+//rows: RE2 RC0 RD1 RC1 RC2 RD0 RC3 RD2
+// left: TX  RX   right: TX RX
+//       RC7 RC6         RC5 RC4
+// switch: RD4
+    TRISA = TRISE = 0;
+    TRISC = 0x50;
+    TRISD = 0x10;
     TMR1 = 0;
-    T1CON = 0x01;
+    T1CON = 0x11;
 
     PIE1 = 0x01;
     INTCON = 0xc0;
 
+    reset_comm();
+
+    unsigned char state = 0;
     while(1) {
-        if (anim_flag == 1) {
-            anim_isr();
-            anim_flag = 0;
+        // comm loop
+        for (int i = 0; i < 2; i++) {
+            if (comm[i].rstate == 3) { // received a byte on the comm
+                if (state == 0) {
+                    if (comm[i].rbuf == 0xf0) {
+                        state = 1;
+                    }
+                }
+
+                comm[i].rstate = 0; // acknowledge so interrupt driver can read more bytes
+            }
+        }
+
+        if (state == 0) {
+            if((PORTD & 0x10) == 0) { // go button pressed
+                tx_all(0xf0);
+                state = 1;
+            }
+        } else if (state == 1) {
+            if (anim_flag) {
+                anim_isr();
+                anim_flag == 0;
+            }
         }
     }
 }
