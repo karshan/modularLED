@@ -8,23 +8,23 @@
 
 #include <xc.h>
 
-#define _XTAL_FREQ 4000000
+#define _XTAL_FREQ 16000000
 
 // CONFIG
-#pragma config FOSC = XT        // Oscillator Selection bits (XT oscillator)
+#pragma config FOSC = HS        // Oscillator Selection bits
 #pragma config WDTE = OFF       // Watchdog Timer Enable bit (WDT disabled)
 #pragma config PWRTE = OFF      // Power-up Timer Enable bit (PWRT disabled)
 #pragma config BOREN = ON       // Brown-out Reset Enable bit (BOR enabled)
 #pragma config LVP = OFF        // Low-Voltage (Single-Supply) In-Circuit Serial Programming Enable bit (RB3 is digital I/O, HV on MCLR must be used for programming)
-#pragma config CPD = OFF        // Data EEPROM Memory Code Protection bit (Data EEPROM code protection off)
+//#pragma config CPD = OFF        // Data EEPROM Memory Code Protection bit (Data EEPROM code protection off)
 #pragma config WRT = OFF        // Flash Program Memory Write Enable bits (Write protection off; all program memory may be written to by EECON control)
 #pragma config CP = OFF         // Flash Program Memory Code Protection bit (Code protection off)
 
 unsigned char state[8] = {
     0x00,
-    0x83,
+    0x03,
     0x00,
-    0x00,
+    0xe0,
     0x00,
     0x07,
     0x01,
@@ -95,8 +95,8 @@ void interrupt isr() {
         }
     }
 
-    RX[0] = (PORTC & 0x40) ? 1:0;
-    RX[1] = (PORTC & 0x10) ? 1:0;
+    RX[0] = 1;//(PORTC & 0x40) ? 1:0;
+    RX[1] = 1;//(PORTC & 0x10) ? 1:0;
     // TODO rx buffering (multiple bytes)
     for (int i = 0; i < 2; i++) {
         if (comm[i].rstate == 0) {
@@ -141,7 +141,7 @@ void interrupt isr() {
             }
         }
     }
-    if (TX[1]) {
+    /*if (TX[1]) {
         TRISC |= 0x20;
     } else {
         TRISC &= 0xdf;
@@ -152,41 +152,43 @@ void interrupt isr() {
     } else {
         TRISC &= 0x7f;
         PORTC &= 0x7f;
-    }
+    }*/
 }
 
 //cols: RA2 RA5 RE0 RD3 RE1 RA3 RA1 RA0
 //rows: RE2 RC0 RD1 RC1 RC2 RD0 RC3 RD2
+
+//cols: RD1 RB6 RB7 RC2 RA1 RC3 RD3 RC4
+//rows: RC1 RD2 RA3 RD0 RB4 RA2 RB5 RA0
 unsigned char rows = 0, cols = 0;
+
+void update_rowscols() {
+    PORTA = (((cols & 8) ? 1:0) << 1) |
+            (((rows & 4) ? 1:0) << 2) |
+            (((rows & 0x20) ? 1:0) << 3) |
+            (((rows & 1) ? 1:0) << 0);
+    PORTC = (((cols & 0x10) ? 1:0) << 2) |
+            (((cols & 4) ? 1:0) << 3) |
+            (((cols & 1) ? 1:0) << 4) |
+            (((rows & 0x80) ? 1:0) << 1);
+    PORTB = (((cols & 0x40) ? 1:0) << 6) |
+            (((cols & 0x20) ? 1:0) << 7) |
+            (((rows & 2) ? 1:0) << 5) |
+            (((rows & 8) ? 1:0) << 4);
+    PORTD = (((cols & 0x80) ? 1:0) << 1) |
+            (((cols & 2) ? 1:0) << 3) |
+            (((rows & 0x40) ? 1:0) << 2) |
+            (((rows & 0x10) ? 1:0) << 0);
+}
+
 void set_cols(unsigned char a) {
     cols = a;
-    PORTA = (((cols & 0x80) ? 1:0) << 2) |
-            (((cols & 0x40) ? 1:0) << 5) |
-            (((cols & 4) ? 1:0) << 3) |
-            (((cols & 2) ? 1:0) << 1) |
-            ((cols & 1) ? 1:0);
-    PORTE = ((cols & 0x20) ? 1:0) |
-            (((cols & 8) ? 1:0) << 1) |
-            (((rows & 0x80) ? 1:0) << 2);
-    PORTD = (((cols & 0x10) ? 1:0) << 3) |
-            (((rows & 0x20) ? 1:0) << 1) |
-            ((rows & 4) ? 1:0) |
-            (((rows & 1) ? 1:0) << 2);
+    update_rowscols();
 }
 
 void set_rows(unsigned char a) {
     rows = a;
-    PORTC = ((rows & 0x40) ? 1:0) |
-            (((rows & 0x10) ? 1:0) << 1) |
-            (((rows & 8) ? 1:0) << 2) |
-            (((rows & 2) ? 1:0) << 3);
-    PORTE = ((cols & 0x20) ? 1:0) |
-            (((cols & 8) ? 1:0) << 1) |
-            (((rows & 0x80) ? 1:0) << 2);
-    PORTD = (((cols & 0x10) ? 1:0) << 3) |
-            (((rows & 0x20) ? 1:0) << 1) |
-            ((rows & 4) ? 1:0) |
-            (((rows & 1) ? 1:0) << 2);
+    update_rowscols();
 }
 
 void led_isr() {
@@ -284,16 +286,22 @@ void tx_all(unsigned char buf) {
 }
 
 void main(void) {
-//cols: RA2 RA5 RE0 RD3 RE1 RA3 RA1 RA0
-//rows: RE2 RC0 RD1 RC1 RC2 RD0 RC3 RD2
+//cols: RD1 RB6 RB7 RC2 RA1 RC3 RD3 RC4
+//rows: RC1 RD2 RA3 RD0 RB4 RA2 RB5 RA0
 // left: TX  RX   right: TX RX
 //       RC7 RC6         RC5 RC4
 // switch: RD4
-    TRISA = TRISE = 0;
+
+    /*    TRISA = TRISE = 0;
     TRISC = 0x50;
-    TRISD = 0x10;
+    TRISD = 0x10;*/
+
+    OSCCON = 0x7a;
+
+    TRISA = TRISB = TRISC = TRISD = 0;
+ 
     TMR1 = 0;
-    T1CON = 0x11;
+    T1CON = 0x01;
 
     PIE1 = 0x01;
     INTCON = 0xc0;
@@ -303,6 +311,9 @@ void main(void) {
     unsigned char mstate = 0;
     unsigned char tmp = 5;
     unsigned char ls, rs;
+
+    // dont wait for button
+    mstate = 1;
     while(1) {
         // comm loop
         for (int i = 0; i < 2; i++) {
