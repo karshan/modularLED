@@ -21,14 +21,14 @@
 #pragma config CP = OFF         // Flash Program Memory Code Protection bit (Code protection off)
 
 unsigned char state[8] = {
-    0x00,
-    0x03,
-    0x00,
-    0xe0,
-    0x00,
-    0x07,
-    0x01,
-    0x02
+    0xf0,
+    0x0f,
+    0x0f,
+    0x0f,
+    0x0f,
+    0x0f,
+    0xf0,
+    0x0f
 };
 
 //unsigned char leds[8]; // for debugging
@@ -155,40 +155,119 @@ void interrupt isr() {
     }*/
 }
 
-//cols: RA2 RA5 RE0 RD3 RE1 RA3 RA1 RA0
-//rows: RE2 RC0 RD1 RC1 RC2 RD0 RC3 RD2
-
 //cols: RD1 RB6 RB7 RC2 RA1 RC3 RD3 RC4
 //rows: RC1 RD2 RA3 RD0 RB4 RA2 RB5 RA0
-unsigned char rows = 0, cols = 0;
+unsigned char p[5]; // port cache
 
-void update_rowscols() {
-    PORTA = (((cols & 8) ? 1:0) << 1) |
-            (((rows & 4) ? 1:0) << 2) |
-            (((rows & 0x20) ? 1:0) << 3) |
-            (((rows & 1) ? 1:0) << 0);
-    PORTC = (((cols & 0x10) ? 1:0) << 2) |
-            (((cols & 4) ? 1:0) << 3) |
-            (((cols & 1) ? 1:0) << 4) |
-            (((rows & 0x80) ? 1:0) << 1);
-    PORTB = (((cols & 0x40) ? 1:0) << 6) |
-            (((cols & 0x20) ? 1:0) << 7) |
-            (((rows & 2) ? 1:0) << 5) |
-            (((rows & 8) ? 1:0) << 4);
-    PORTD = (((cols & 0x80) ? 1:0) << 1) |
-            (((cols & 2) ? 1:0) << 3) |
-            (((rows & 0x40) ? 1:0) << 2) |
-            (((rows & 0x10) ? 1:0) << 0);
+void update_ports() {
+    PORTA = p[0];
+    PORTB = p[1];
+    PORTC = p[2];
+    PORTD = p[3];
 }
 
-void set_cols(unsigned char a) {
-    cols = a;
-    update_rowscols();
+//cols: RD1 RB6 RB7 RC2 RA1 RC3 RD3 RC4
+void set_cols(unsigned char cols) {
+    if (cols & 0x80) {
+        p[3] |= (1 << 1);
+    } else {
+        p[3] &= ~(1 << 1);
+    }
+
+    if (cols & 0x40) {
+        p[1] |= (1 << 6);
+    } else {
+        p[1] &= ~(1 << 6);
+    }
+
+    if (cols & 0x20) {
+        p[1] |= (1 << 7);
+    } else {
+        p[1] &= ~(1 << 7);
+    }
+
+    if (cols & 0x10) {
+        p[2] |= (1 << 2);
+    } else {
+        p[2] &= ~(1 << 2);
+    }
+
+    if (cols & 8) {
+        p[0] |= (1 << 1);
+    } else {
+        p[0] &= ~(1 << 1);
+    }
+
+    if (cols & 4) {
+        p[2] |= (1 << 3);
+    } else {
+        p[2] &= ~(1 << 3);
+    }
+
+    if (cols & 2) {
+        p[3] |= (1 << 3);
+    } else {
+        p[3] &= ~(1 << 3);
+    }
+
+    if (cols & 1) {
+        p[2] |= (1 << 4);
+    } else {
+        p[2] &= ~(1 << 4);
+    }
+    update_ports();
 }
 
-void set_rows(unsigned char a) {
-    rows = a;
-    update_rowscols();
+//rows: RC1 RD2 RA3 RD0 RB4 RA2 RB5 RA0
+void set_rows(unsigned char rows) {
+    if (rows & 0x80) {
+        p[2] |= (1 << 1);
+    } else {
+        p[2] &= ~(1 << 1);
+    }
+
+    if (rows & 0x40) {
+        p[3] |= (1 << 2);
+    } else {
+        p[3] &= ~(1 << 2);
+    }
+
+    if (rows & 0x20) {
+        p[0] |= (1 << 3);
+    } else {
+        p[0] &= ~(1 << 3);
+    }
+
+    if (rows & 0x10) {
+        p[3] |= (1 << 0);
+    } else {
+        p[3] &= ~(1 << 0);
+    }
+
+    if (rows & 8) {
+        p[1] |= (1 << 4);
+    } else {
+        p[1] &= ~(1 << 4);
+    }
+
+    if (rows & 4) {
+        p[0] |= (1 << 2);
+    } else {
+        p[0] &= ~(1 << 2);
+    }
+
+    if (rows & 2) {
+        p[1] |= (1 << 5);
+    } else {
+        p[1] &= ~(1 << 5);
+    }
+
+    if (rows & 1) {
+        p[0] |= (1 << 0);
+    } else {
+        p[0] &= ~(1 << 0);
+    }
+    update_ports();
 }
 
 void led_isr() {
@@ -299,7 +378,7 @@ void main(void) {
     OSCCON = 0x7a;
 
     TRISA = TRISB = TRISC = TRISD = 0;
- 
+
     TMR1 = 0;
     T1CON = 0x01;
 
