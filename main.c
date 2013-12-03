@@ -20,18 +20,32 @@
 #pragma config WRT = OFF        // Flash Program Memory Write Enable bits (Write protection off; all program memory may be written to by EECON control)
 #pragma config CP = OFF         // Flash Program Memory Code Protection bit (Code protection off)
 
+
+#define STEPT 2000
+
 unsigned char state[8] = {
-    0xf0,
-    0x0f,
-    0x0f,
-    0x0f,
-    0x0f,
-    0x0f,
-    0xf0,
-    0x0f
+#if 0
+    0x80,
+    0x40,
+    0x20,
+    0x10,
+    0x10,
+    0x20,
+    0x40,
+    0x80
+#else
+    0x01,
+    0x02,
+    0x04,
+    0x08,
+    0x08,
+    0x04,
+    0x02,
+    0x01
+#endif
 };
 
-//unsigned char leds[8]; // for debugging
+unsigned char leds[8]; // for debugging
 
 unsigned char nbrstate[4];
 
@@ -51,11 +65,23 @@ unsigned char TX[4] = {1, 1, 1, 1};
 
 unsigned char ledc = 0;
 unsigned char led_row = 0;
-long int animc = 0;
+long int animc = 0, stepc = 0;
 bit anim_flag = 0;
+bit step_flag;
 
 void led_isr();
 void anim_isr();
+
+unsigned char p[5]; // port cache
+
+void update_ports() {
+    PORTA = p[0];
+    PORTB = p[1];
+    PORTC = p[2];
+    PORTD = p[3];
+    PORTE = p[4];
+}
+
 
 void reset_comm() {
     for (int i = 0; i < 4; i++) {
@@ -63,6 +89,26 @@ void reset_comm() {
         comm[i].state = comm[i].rstate = comm[i].tstate = 0;
         nbrstate[i] = 0;
     }
+}
+
+void update_rx() {
+    RX[0] = (PORTC & (1 << 7)) ? 1:0; // LEFT
+    RX[1] = (PORTE & (1 << 1)) ? 1:0; // RIGHT
+}
+
+void update_tx() {
+    if (TX[0]) {
+        p[3] |= (1 << 4);
+    } else {
+        p[3] &= ~(1 << 4);
+    }
+
+    if (TX[1]) {
+        p[4] |= (1 << 0);
+    } else {
+        p[4] &= ~(1 << 0);
+    }
+    update_ports();
 }
 
 unsigned char col_state(int col) {
@@ -79,14 +125,14 @@ void interrupt isr() {
     PIR1 &= 0xfe;
     T1CON &= 0xfe;
 
-    TMR1L = 0x0c;
-    TMR1H = 0xfe;
+    TMR1L = 0x2f;
+    TMR1H = 0xf8;
 
     T1CON |= 0x01;
 
     if (--ledc <= 0) {
         led_isr();
-        ledc = 2;
+        ledc = 3;
     }
 
     if (anim_flag == 0) {
@@ -95,8 +141,13 @@ void interrupt isr() {
         }
     }
 
-    RX[0] = 1;//(PORTC & 0x40) ? 1:0;
-    RX[1] = 1;//(PORTC & 0x10) ? 1:0;
+    if (step_flag == 0) {
+        if (--stepc <= 0) {
+            step_flag = 1;
+        }
+    }
+
+    update_rx();
     // TODO rx buffering (multiple bytes)
     for (int i = 0; i < 2; i++) {
         if (comm[i].rstate == 0) {
@@ -111,6 +162,7 @@ void interrupt isr() {
                 comm[i].rbuf |= RX[i] << comm[i].ri;
                 comm[i].rc = 16;
                 comm[i].ri++;
+
                 if (comm[i].ri >= 8) {
                     comm[i].rstate = 2;
                 }
@@ -130,6 +182,7 @@ void interrupt isr() {
                 }
                 comm[i].ti++;
                 comm[i].tc = 16;
+                
                 if (comm[i].ti >= 9) {
                     comm[i].tstate = 2;
                 }
@@ -141,30 +194,11 @@ void interrupt isr() {
             }
         }
     }
-    /*if (TX[1]) {
-        TRISC |= 0x20;
-    } else {
-        TRISC &= 0xdf;
-        PORTC &= 0xdf;
-    }
-    if (TX[0]) {
-        TRISC |= 0x80;
-    } else {
-        TRISC &= 0x7f;
-        PORTC &= 0x7f;
-    }*/
+    update_tx();
 }
 
 //cols: RD1 RB6 RB7 RC2 RA1 RC3 RD3 RC4
 //rows: RC1 RD2 RA3 RD0 RB4 RA2 RB5 RA0
-unsigned char p[5]; // port cache
-
-void update_ports() {
-    PORTA = p[0];
-    PORTB = p[1];
-    PORTC = p[2];
-    PORTD = p[3];
-}
 
 //cols: RD1 RB6 RB7 RC2 RA1 RC3 RD3 RC4
 void set_cols(unsigned char cols) {
@@ -273,6 +307,9 @@ void set_rows(unsigned char rows) {
 void led_isr() {
     set_rows(0xff);
     set_cols(state[led_row]);
+    /*if (led_row == 0 || led_row == 1) {
+        set_cols(leds[led_row]);
+    }*/
     set_rows(~(1 << led_row));
     led_row = (led_row + 1) & 0x07;
 }
@@ -356,6 +393,11 @@ void tx(int c, unsigned char buf) {
     comm[c].tbuf = buf;
     comm[c].ti = 0;
     comm[c].tstate = 1;
+#if 0
+    leds[1] = comm[0].tbuf;
+#else
+    leds[1] = comm[1].tbuf;
+#endif
 }
 
 void tx_all(unsigned char buf) {
@@ -377,7 +419,11 @@ void main(void) {
 
     OSCCON = 0x7a;
 
-    TRISA = TRISB = TRISC = TRISD = 0;
+    ANSELA = ANSELB = ANSELC = ANSELD = ANSELE = 0;
+
+    TRISA = TRISB = TRISD = 0;
+    TRISC = 0x80;
+    TRISE = 0x02;
 
     TMR1 = 0;
     T1CON = 0x01;
@@ -390,20 +436,40 @@ void main(void) {
     unsigned char mstate = 0;
     unsigned char tmp = 5;
     unsigned char ls, rs;
-
+    
     // dont wait for button
+#if 0
+    mstate = 0;
+#else
+    __delay_ms(500);
+    tx_all(0xf0);
     mstate = 1;
+    animc = STEPT;
+    stepc = STEPT * 4;
+    step_flag = 0;
+    anim_flag = 0;
+#endif
     while(1) {
         // comm loop
         for (int i = 0; i < 2; i++) {
-            if (comm[i].rstate == 3) { // received a byte on the comm 
+            if (comm[i].rstate == 3) { // received a byte on the comm
+                leds[0] = comm[i].rbuf;
+
+                if (comm[i].rbuf == 0xef && (stepc > STEPT*2)) {
+                    stepc = STEPT * 4;
+                    step_flag = 0;
+                }
+
                 if (mstate == 0) {
                     if (comm[i].rbuf == 0xf0) {
                         mstate = 1;
-                        animc = 500;
+                        animc = STEPT - 160;
+                        stepc = STEPT * 4 - 160;
+                        step_flag = 0;
                         anim_flag = 0;
                     }
                 }
+
                 if ((comm[i].rbuf & 0xf0) == 0x10) {
                     nbrstate[i] = comm[i].rbuf & 0x0f;
                 } else if ((comm[i].rbuf & 0xf0) == 0x20) {
@@ -415,16 +481,18 @@ void main(void) {
         }
 
         if (mstate == 0) {
+#if 0
             if((PORTD & 0x10) == 0) { // go button pressed
                 tx_all(0xf0);
                 mstate = 1;
 
-                animc = 500;
+                animc = STEPT;
                 anim_flag = 0;
             }
+#endif
         } else if (mstate == 1) {
             if (anim_flag) {
-                animc = 500;
+                animc = STEPT;
                 anim_flag = 0;
                 mstate = 2;
             }
@@ -435,7 +503,7 @@ void main(void) {
                 tx(0, (ls & 0x0f) | 0x10);
                 tx(1, (rs & 0x0f) | 0x10);
 
-                animc = 500;
+                animc = STEPT;
                 anim_flag = 0;
                 mstate = 3;
             }
@@ -444,14 +512,18 @@ void main(void) {
                 tx(0, ((ls >> 4) & 0x0f) | 0x20);
                 tx(1, ((rs >> 4) & 0x0f) | 0x20);
 
-                animc = 500;
+                animc = STEPT;
                 anim_flag = 0;
                 mstate = 4;
             }
         } else if (mstate == 4) {
-            if (anim_flag) {
+            if (step_flag) {
+                tx_all(0xef);
+                stepc = STEPT * 4;
+                step_flag = 0;
+
                 anim_isr();
-                animc = 500;
+                animc = STEPT;
                 anim_flag = 0;
                 mstate = 1;
             }
